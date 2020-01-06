@@ -23,6 +23,7 @@ public class BaseJdbcConfig
     private String connectionUrl;
     private String connectionUser;
     private String connectionPassword;
+    private boolean parallelReadEnabled;
 
     @NotNull
     public String getConnectionUrl()
@@ -59,6 +60,18 @@ public class BaseJdbcConfig
     public BaseJdbcConfig setConnectionPassword(String connectionPassword)
     {
         this.connectionPassword = connectionPassword;
+        return this;
+    }
+
+    public boolean isParallelReadEnabled()
+    {
+        return parallelReadEnabled;
+    }
+
+    @Config("parallel-read-enabled")
+    public BaseJdbcConfig setParallelReadEnabled(boolean parallelReadEnabled)
+    {
+        this.parallelReadEnabled = parallelReadEnabled;
         return this;
     }
 }

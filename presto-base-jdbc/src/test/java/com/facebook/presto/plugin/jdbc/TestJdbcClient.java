@@ -27,7 +27,9 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.util.List;
+import java.util.Optional;
 
+import static com.facebook.presto.plugin.jdbc.BaseJdbcClient.convertRangeInfoIntoPredicate;
 import static com.facebook.presto.plugin.jdbc.TestingDatabase.CONNECTOR_ID;
 import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_BIGINT;
 import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_DATE;
@@ -178,5 +180,18 @@ public class TestJdbcClient
         finally {
             jdbcClient.dropTable(tableHandle);
         }
+    }
+
+    @Test
+    public void testConvertRangeInfoIntoPredicate()
+    {
+        RangeInfo range = new RangeInfo("id", Optional.empty(), Optional.of(10));
+        assertEquals(convertRangeInfoIntoPredicate(range), "id < 10");
+
+        range = new RangeInfo("id", Optional.of(5), Optional.of(10));
+        assertEquals(convertRangeInfoIntoPredicate(range), "id >= 5 AND id < 10");
+
+        range = new RangeInfo("id", Optional.of(5), Optional.empty());
+        assertEquals(convertRangeInfoIntoPredicate(range), "id >= 5");
     }
 }

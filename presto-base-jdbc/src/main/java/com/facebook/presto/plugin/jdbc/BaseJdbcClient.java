@@ -49,6 +49,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static com.facebook.presto.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static com.facebook.presto.plugin.jdbc.StandardReadMappings.jdbcTypeToPrestoType;
@@ -69,6 +70,7 @@ import static com.facebook.presto.spi.type.TinyintType.TINYINT;
 import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.spi.type.Varchars.isVarcharType;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static java.lang.String.format;
@@ -101,6 +103,7 @@ public class BaseJdbcClient
     protected final String connectorId;
     protected final ConnectionFactory connectionFactory;
     protected final String identifierQuote;
+    protected final boolean parallelReadEnabled;
 
     public BaseJdbcClient(JdbcConnectorId connectorId, BaseJdbcConfig config, String identifierQuote, ConnectionFactory connectionFactory)
     {
@@ -108,6 +111,7 @@ public class BaseJdbcClient
         requireNonNull(config, "config is null"); // currently unused, retained as parameter for future extensions
         this.identifierQuote = requireNonNull(identifierQuote, "identifierQuote is null");
         this.connectionFactory = requireNonNull(connectionFactory, "connectionFactory is null");
+        this.parallelReadEnabled = config.isParallelReadEnabled();
     }
 
     @PreDestroy
@@ -235,14 +239,72 @@ public class BaseJdbcClient
     public ConnectorSplitSource getSplits(JdbcTableLayoutHandle layoutHandle)
     {
         JdbcTableHandle tableHandle = layoutHandle.getTable();
-        JdbcSplit jdbcSplit = new JdbcSplit(
-                connectorId,
-                tableHandle.getCatalogName(),
-                tableHandle.getSchemaName(),
-                tableHandle.getTableName(),
-                layoutHandle.getTupleDomain(),
-                Optional.empty());
-        return new FixedSplitSource(ImmutableList.of(jdbcSplit));
+
+        if (this.parallelReadEnabled) {
+            JdbcSplit jdbcSplit = new JdbcSplit(
+                    connectorId,
+                    tableHandle.getCatalogName(),
+                    tableHandle.getSchemaName(),
+                    tableHandle.getTableName(),
+                    layoutHandle.getTupleDomain(),
+                    Optional.empty());
+            return new FixedSplitSource(ImmutableList.of(jdbcSplit));
+        }
+
+        Optional<List<RangeInfo>> ranges = getSplitRanges(tableHandle);
+        // the underlying table does not meet the parallel read requirements OR it is just not implemented
+        if (!ranges.isPresent()) {
+            return new FixedSplitSource(ImmutableList.of(new JdbcSplit(
+                    connectorId,
+                    tableHandle.getCatalogName(),
+                    tableHandle.getSchemaName(),
+                    tableHandle.getTableName(),
+                    layoutHandle.getTupleDomain(),
+                    Optional.empty())));
+        }
+
+        checkState(!ranges.get().isEmpty(), "The split range is empty");
+        List<JdbcSplit> splits = ranges.get().stream()
+                .map(BaseJdbcClient::convertRangeInfoIntoPredicate)
+                .map(x -> new JdbcSplit(
+                        connectorId,
+                        tableHandle.getCatalogName(),
+                        tableHandle.getSchemaName(),
+                        tableHandle.getTableName(),
+                        layoutHandle.getTupleDomain(),
+                        Optional.of(x)))
+                .collect(Collectors.toList());
+        return new FixedSplitSource(splits);
+    }
+
+    static String convertRangeInfoIntoPredicate(RangeInfo rangeInfo)
+    {
+        StringBuilder sql = new StringBuilder();
+        String expression = rangeInfo.getExpression();
+        if (rangeInfo.getLowerBound().isPresent()) {
+            sql.append(expression).append(" >= ").append(rangeInfo.getLowerBound().get());
+        }
+
+        if (rangeInfo.getUpperBound().isPresent()) {
+            if (rangeInfo.getLowerBound().isPresent()) {
+                sql.append(" AND ");
+            }
+            sql.append(expression).append(" < ").append(rangeInfo.getUpperBound().get());
+        }
+
+        return sql.toString();
+    }
+
+    /**
+     * Resolve the split ranges.
+     *
+     * Subclasses override this method to provide DB-specific splitting logic.
+     * @param tableHandle
+     * @return
+     */
+    protected Optional<List<RangeInfo>> getSplitRanges(JdbcTableHandle tableHandle)
+    {
+        return Optional.empty();
     }
 
     @Override
